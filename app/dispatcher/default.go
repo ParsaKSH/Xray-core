@@ -13,6 +13,7 @@ import (
 	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/ratelimit"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/dns"
@@ -92,13 +93,21 @@ func (r *cachedReader) Interrupt() {
 	}
 }
 
+// userLimiter holds a shared rate limiter for a user with reference counting.
+type userLimiter struct {
+	limiter  *ratelimit.Limiter
+	refCount int32
+}
+
 // DefaultDispatcher is a default implementation of Dispatcher.
 type DefaultDispatcher struct {
-	ohm    outbound.Manager
-	router routing.Router
-	policy policy.Manager
-	stats  stats.Manager
-	fdns   dns.FakeDNSEngine
+	ohm        outbound.Manager
+	router     routing.Router
+	policy     policy.Manager
+	stats      stats.Manager
+	fdns       dns.FakeDNSEngine
+	limiters   map[string]*userLimiter // email -> limiter
+	limitersMu sync.Mutex
 }
 
 func init() {
@@ -122,7 +131,41 @@ func (d *DefaultDispatcher) Init(config *Config, om outbound.Manager, router rou
 	d.router = router
 	d.policy = pm
 	d.stats = sm
+	d.limiters = make(map[string]*userLimiter)
 	return nil
+}
+
+// getOrCreateLimiter returns a shared rate limiter for the given user email.
+// It increments the reference count each time it's called.
+func (d *DefaultDispatcher) getOrCreateLimiter(email string, bytesPerSec uint64) *ratelimit.Limiter {
+	d.limitersMu.Lock()
+	defer d.limitersMu.Unlock()
+
+	ul, ok := d.limiters[email]
+	if !ok {
+		ul = &userLimiter{
+			limiter: ratelimit.NewLimiter(bytesPerSec),
+		}
+		d.limiters[email] = ul
+	}
+	ul.refCount++
+	return ul.limiter
+}
+
+// releaseLimiter decrements the reference count for the given user's limiter.
+// When the count reaches zero, the limiter is cleaned up.
+func (d *DefaultDispatcher) releaseLimiter(email string) {
+	d.limitersMu.Lock()
+	defer d.limitersMu.Unlock()
+
+	ul, ok := d.limiters[email]
+	if !ok {
+		return
+	}
+	ul.refCount--
+	if ul.refCount <= 0 {
+		delete(d.limiters, email)
+	}
 }
 
 // Type implements common.HasType.
@@ -161,21 +204,57 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 
 	if user != nil && len(user.Email) > 0 {
 		p := d.policy.ForLevel(user.Level)
-		if p.Stats.UserUplink {
-			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
-			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
-				inboundLink.Writer = &SizeStatWriter{
-					Counter: c,
-					Writer:  inboundLink.Writer,
+
+		// Rate limiting
+		if p.SpeedLimit > 0 {
+			limiter := d.getOrCreateLimiter(user.Email, p.SpeedLimit)
+			context.AfterFunc(ctx, func() { d.releaseLimiter(user.Email) })
+
+			// Disable splice for rate-limited users — splice bypasses writers
+			if sessionInbound != nil && sessionInbound.CanSpliceCopy < 3 {
+				sessionInbound.CanSpliceCopy = 3
+			}
+
+			var uplinkCounter, downlinkCounter stats.Counter
+			if p.Stats.UserUplink {
+				name := "user>>>" + user.Email + ">>>traffic>>>uplink"
+				uplinkCounter, _ = stats.GetOrRegisterCounter(d.stats, name)
+			}
+			if p.Stats.UserDownlink {
+				name := "user>>>" + user.Email + ">>>traffic>>>downlink"
+				downlinkCounter, _ = stats.GetOrRegisterCounter(d.stats, name)
+			}
+
+			inboundLink.Writer = &RateLimitWriter{
+				Counter: uplinkCounter,
+				Writer:  inboundLink.Writer,
+				Limiter: limiter,
+				Ctx:     ctx,
+			}
+			outboundLink.Writer = &RateLimitWriter{
+				Counter: downlinkCounter,
+				Writer:  outboundLink.Writer,
+				Limiter: limiter,
+				Ctx:     ctx,
+			}
+		} else {
+			// No rate limiting — use original SizeStatWriter path
+			if p.Stats.UserUplink {
+				name := "user>>>" + user.Email + ">>>traffic>>>uplink"
+				if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
+					inboundLink.Writer = &SizeStatWriter{
+						Counter: c,
+						Writer:  inboundLink.Writer,
+					}
 				}
 			}
-		}
-		if p.Stats.UserDownlink {
-			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
-			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
-				outboundLink.Writer = &SizeStatWriter{
-					Counter: c,
-					Writer:  outboundLink.Writer,
+			if p.Stats.UserDownlink {
+				name := "user>>>" + user.Email + ">>>traffic>>>downlink"
+				if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
+					outboundLink.Writer = &SizeStatWriter{
+						Counter: c,
+						Writer:  outboundLink.Writer,
+					}
 				}
 			}
 		}
@@ -213,10 +292,25 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 		if p.Stats.UserDownlink {
 			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
 			if c, _ := stats.GetOrRegisterCounter(statsManager, name); c != nil {
-				link.Writer = &SizeStatWriter{
-					Counter: c,
-					Writer:  link.Writer,
+				if p.SpeedLimit > 0 {
+					link.Writer = &RateLimitWriter{
+						Counter: c,
+						Writer:  link.Writer,
+						Limiter: ratelimit.NewLimiter(p.SpeedLimit),
+						Ctx:     ctx,
+					}
+				} else {
+					link.Writer = &SizeStatWriter{
+						Counter: c,
+						Writer:  link.Writer,
+					}
 				}
+			}
+		} else if p.SpeedLimit > 0 {
+			link.Writer = &RateLimitWriter{
+				Writer:  link.Writer,
+				Limiter: ratelimit.NewLimiter(p.SpeedLimit),
+				Ctx:     ctx,
 			}
 		}
 		if p.Stats.UserOnline {
