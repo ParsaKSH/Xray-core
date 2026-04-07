@@ -207,6 +207,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 
 		// Rate limiting
 		if p.SpeedLimit > 0 {
+			errors.LogInfo(ctx, "applying speed limit ", p.SpeedLimit, " bytes/sec for user ", user.Email)
 			limiter := d.getOrCreateLimiter(user.Email, p.SpeedLimit)
 			context.AfterFunc(ctx, func() { d.releaseLimiter(user.Email) })
 

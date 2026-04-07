@@ -58,6 +58,9 @@ func (p *Policy) overrideWith(another *Policy) {
 			Connection: another.Buffer.Connection,
 		}
 	}
+	if another.SpeedLimit > 0 {
+		p.SpeedLimit = another.SpeedLimit
+	}
 }
 
 // ToCorePolicy converts this Policy to policy.Session.
