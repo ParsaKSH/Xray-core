@@ -1,7 +1,6 @@
 //go:build coveragemain
 // +build coveragemain
 
-// hi
 package main
 
 import (
