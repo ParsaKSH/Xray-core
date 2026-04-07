@@ -5,14 +5,15 @@ import (
 )
 
 type Policy struct {
-	Handshake         *uint32 `json:"handshake"`
-	ConnectionIdle    *uint32 `json:"connIdle"`
-	UplinkOnly        *uint32 `json:"uplinkOnly"`
-	DownlinkOnly      *uint32 `json:"downlinkOnly"`
-	StatsUserUplink   bool    `json:"statsUserUplink"`
-	StatsUserDownlink bool    `json:"statsUserDownlink"`
-	StatsUserOnline   bool    `json:"statsUserOnline"`
-	BufferSize        *int32  `json:"bufferSize"`
+	Handshake         *uint32    `json:"handshake"`
+	ConnectionIdle    *uint32    `json:"connIdle"`
+	UplinkOnly        *uint32    `json:"uplinkOnly"`
+	DownlinkOnly      *uint32    `json:"downlinkOnly"`
+	StatsUserUplink   bool       `json:"statsUserUplink"`
+	StatsUserDownlink bool       `json:"statsUserDownlink"`
+	StatsUserOnline   bool       `json:"statsUserOnline"`
+	BufferSize        *int32     `json:"bufferSize"`
+	SpeedLimit        *Bandwidth `json:"speedLimit"`
 }
 
 func (t *Policy) Build() (*policy.Policy, error) {
@@ -47,6 +48,14 @@ func (t *Policy) Build() (*policy.Policy, error) {
 		p.Buffer = &policy.Policy_Buffer{
 			Connection: bs,
 		}
+	}
+
+	if t.SpeedLimit != nil {
+		bps, err := t.SpeedLimit.Bps()
+		if err != nil {
+			return nil, err
+		}
+		p.SpeedLimit = bps
 	}
 
 	return p, nil

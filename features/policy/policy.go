@@ -57,9 +57,10 @@ type System struct {
 
 // Session is session based settings for controlling Xray requests. It contains various settings (or limits) that may differ for different users in the context.
 type Session struct {
-	Timeouts Timeout // Timeout settings
-	Stats    Stats
-	Buffer   Buffer
+	Timeouts   Timeout // Timeout settings
+	Stats      Stats
+	Buffer     Buffer
+	SpeedLimit uint64 // Speed limit in bytes per second. 0 means unlimited.
 }
 
 // Manager is a feature that provides Policy for the given user by its id or level.

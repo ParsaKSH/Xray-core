@@ -78,6 +78,7 @@ func (p *Policy) ToCorePolicy() policy.Session {
 	if p.Buffer != nil {
 		cp.Buffer.PerConnection = p.Buffer.Connection
 	}
+	cp.SpeedLimit = p.SpeedLimit
 	return cp
 }
 
