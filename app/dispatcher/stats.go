@@ -57,3 +57,35 @@ func (w *RateLimitWriter) Close() error {
 func (w *RateLimitWriter) Interrupt() {
 	common.Interrupt(w.Writer)
 }
+
+// RateLimitReader wraps a buf.Reader with bandwidth rate limiting.
+// This is needed for protocols (like SS2022 via singbridge) that read
+// from link.Reader directly instead of going through a Writer wrapper.
+type RateLimitReader struct {
+	Reader  buf.Reader
+	Limiter *ratelimit.Limiter
+	Ctx     context.Context
+}
+
+func (r *RateLimitReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	mb, err := r.Reader.ReadMultiBuffer()
+	if err != nil {
+		return mb, err
+	}
+	n := int(mb.Len())
+	if r.Limiter != nil && n > 0 {
+		if waitErr := r.Limiter.Wait(r.Ctx, n); waitErr != nil {
+			buf.ReleaseMulti(mb)
+			return nil, waitErr
+		}
+	}
+	return mb, nil
+}
+
+func (r *RateLimitReader) Close() error {
+	return common.Close(r.Reader)
+}
+
+func (r *RateLimitReader) Interrupt() {
+	common.Interrupt(r.Reader)
+}

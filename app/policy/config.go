@@ -1,10 +1,32 @@
 package policy
 
 import (
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/features/policy"
 )
+
+// LevelSpeedLimits stores speed limits (bytes/sec) per policy level.
+// Set by infra/conf during config parsing, read by the policy manager.
+var (
+	LevelSpeedLimits   = make(map[uint32]uint64)
+	LevelSpeedLimitsMu sync.Mutex
+)
+
+// SetLevelSpeedLimit sets the speed limit for a given policy level.
+func SetLevelSpeedLimit(level uint32, bytesPerSec uint64) {
+	LevelSpeedLimitsMu.Lock()
+	defer LevelSpeedLimitsMu.Unlock()
+	LevelSpeedLimits[level] = bytesPerSec
+}
+
+// GetLevelSpeedLimit returns the speed limit for a given policy level.
+func GetLevelSpeedLimit(level uint32) uint64 {
+	LevelSpeedLimitsMu.Lock()
+	defer LevelSpeedLimitsMu.Unlock()
+	return LevelSpeedLimits[level]
+}
 
 // Duration converts Second to time.Duration.
 func (s *Second) Duration() time.Duration {
@@ -57,6 +79,9 @@ func (p *Policy) overrideWith(another *Policy) {
 		p.Buffer = &Policy_Buffer{
 			Connection: another.Buffer.Connection,
 		}
+	}
+	if another.SpeedLimit > 0 {
+		p.SpeedLimit = another.SpeedLimit
 	}
 }
 
