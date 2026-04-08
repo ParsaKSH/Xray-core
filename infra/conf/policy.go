@@ -93,6 +93,11 @@ func (c *PolicyConfig) Build() (*policy.Config, error) {
 				return nil, err
 			}
 			levels[l] = pp
+			// Register speed limit in package-level registry
+			// (bypasses protobuf serialization which loses the Go-only field)
+			if pp.SpeedLimit > 0 {
+				policy.SetLevelSpeedLimit(l, pp.SpeedLimit)
+			}
 		}
 	}
 	config := &policy.Config{

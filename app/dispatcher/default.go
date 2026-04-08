@@ -238,6 +238,13 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 				Limiter: limiter,
 				Ctx:     ctx,
 			}
+			// Also wrap the inbound reader (downlink) for protocols like SS2022
+			// that read from link.Reader directly via singbridge
+			inboundLink.Reader = &RateLimitReader{
+				Reader:  inboundLink.Reader,
+				Limiter: limiter,
+				Ctx:     ctx,
+			}
 		} else {
 			// No rate limiting — use original SizeStatWriter path
 			if p.Stats.UserUplink {

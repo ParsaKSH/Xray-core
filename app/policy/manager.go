@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/features/policy"
 )
 
@@ -23,6 +24,12 @@ func New(ctx context.Context, config *Config) (*Instance, error) {
 		for lv, p := range config.Level {
 			pp := defaultPolicy()
 			pp.overrideWith(p)
+			// Read speed limit from the package-level registry
+			// (set by infra/conf during JSON parsing, bypasses protobuf serialization)
+			if sl := GetLevelSpeedLimit(lv); sl > 0 {
+				pp.SpeedLimit = sl
+			}
+			errors.LogInfo(ctx, "[policy] level ", lv, " speedLimit=", pp.SpeedLimit, " bytes/sec")
 			m.levels[lv] = pp
 		}
 	}
@@ -38,7 +45,11 @@ func (*Instance) Type() interface{} {
 // ForLevel implements policy.Manager.
 func (m *Instance) ForLevel(level uint32) policy.Session {
 	if p, ok := m.levels[level]; ok {
-		return p.ToCorePolicy()
+		s := p.ToCorePolicy()
+		if s.SpeedLimit > 0 {
+			errors.LogInfo(context.Background(), "[policy] ForLevel(", level, ") returning SpeedLimit=", s.SpeedLimit)
+		}
+		return s
 	}
 	return policy.SessionDefault()
 }
